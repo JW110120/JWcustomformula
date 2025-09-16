@@ -87,15 +87,13 @@ function useLayerList() {
         if (!blendLayerId && secondId) setBlendLayerId(secondId);
         initializedRef.current = true;
       } else {
-        // 后续只在“当前选择已不存在”时回退，且回退时仍跳过插件结果图层
-        if (!existsBase) {
-          const { firstId } = chooseDefaults(list);
-          if (firstId) setBaseLayerId(firstId);
+        // 后续：不再自动回退到默认图层，避免创建结果图层时误改用户选择
+        // 若当前选择对应的图层被删除，则清空选择以提示用户手动重新选择
+        if (!existsBase && baseLayerId != null) {
+          setBaseLayerId(null);
         }
-        if (!existsBlend) {
-          const { secondId, firstId } = chooseDefaults(list);
-          if (secondId) setBlendLayerId(secondId);
-          else if (firstId) setBlendLayerId(firstId);
+        if (!existsBlend && blendLayerId != null) {
+          setBlendLayerId(null);
         }
       }
     } catch (e: any) {
@@ -301,6 +299,15 @@ const MainPanel: React.FC = () => {
       setStatus('基底图层与混合图层不能相同');
       return;
     }
+    // 锁定当前所选 ID 并校验其仍存在，避免在执行过程中被图层变化影响
+    const baseId = baseLayerId;
+    const blendId = blendLayerId;
+    const baseExistsNow = layers.some(l => l.id === baseId);
+    const blendExistsNow = layers.some(l => l.id === blendId);
+    if (!baseExistsNow || !blendExistsNow) {
+      setStatus('所选图层已不存在，请重新选择');
+      return;
+    }
     try {
       const engine = compile(exprInput);
       // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -339,17 +346,33 @@ const MainPanel: React.FC = () => {
       // 读取两层像素，按公式计算并写入结果图层
       await core.executeAsModal(async () => {
         const doc = app.activeDocument;
+        const docIdNum = Number(doc.id);
         const w = Number(doc.width);
         const h = Number(doc.height);
         const targetBounds = { left: 0, top: 0, right: w, bottom: h };
 
+        // 像素读取的兼容封装
+        const toSurface = (x: any) => (x?.imageData ?? x?.pixelData ?? x);
+        const readBuffer = async (surf: any): Promise<Uint8Array> => {
+          if (!surf) throw new Error('无法读取像素数据');
+          if (typeof surf.getData === 'function') {
+            const ab = await surf.getData();
+            return new Uint8Array(ab);
+          }
+          if (surf.data) {
+            const d: any = surf.data;
+            if (d instanceof Uint8Array) return d;
+            if (d?.buffer) return new Uint8Array(d.buffer);
+          }
+          if (surf.buffer) return new Uint8Array(surf.buffer);
+          throw new Error('不支持的像素数据格式');
+        };
+
         // 获取像素（整幅画布尺寸，RGBA 8bit）
-        const basePx = await imaging.getPixels({ documentID: doc.id, layerID: Number(baseLayerId), bounds: targetBounds, colorSpace: 'RGBA' });
-        const blendPx = await imaging.getPixels({ documentID: doc.id, layerID: Number(blendLayerId), bounds: targetBounds, colorSpace: 'RGBA' });
-        const baseImg = basePx?.imageData || basePx;
-        const blendImg = blendPx?.imageData || blendPx;
-        const baseBuf = new Uint8Array(await baseImg.getData());
-        const blendBuf = new Uint8Array(await blendImg.getData());
+        const basePx = await imaging.getPixels({ documentID: docIdNum, layerID: Number(baseId), bounds: targetBounds, colorSpace: 'RGBA' });
+        const blendPx = await imaging.getPixels({ documentID: docIdNum, layerID: Number(blendId), bounds: targetBounds, colorSpace: 'RGBA' });
+        const baseBuf = await readBuffer(toSurface(basePx));
+        const blendBuf = await readBuffer(toSurface(blendPx));
 
         const outBuf = new Uint8Array(w * h * 4);
         for (let i = 0, p = 0; i < w * h; i++, p += 4) {
@@ -383,15 +406,13 @@ const MainPanel: React.FC = () => {
 
         const resultLayer = app.activeDocument.activeLayers[0];
         await imaging.putPixels({
-          documentID: doc.id,
+          documentID: docIdNum,
           layerID: Number(resultLayer.id),
           targetBounds: targetBounds,
           imageData: outImgData
         });
 
         outImgData.dispose?.();
-        baseImg.dispose?.();
-        blendImg.dispose?.();
       }, { commandName: 'Apply Custom Formula' });
 
       setStatus(`已应用公式到图层“${resultName}”`);
