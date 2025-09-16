@@ -12,7 +12,7 @@ html, body, #root {
   height: 100%;
   margin: 0;
   padding: 0;
-  background: var(--bg);
+  background: var(--bg-sb);
   color: var(--text);
   font-family: 'SourceHanSansCN-Normal', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, 'Noto Sans', 'PingFang SC', 'Microsoft YaHei', sans-serif;
 }
@@ -29,35 +29,85 @@ html, body, #root {
 .panel {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 12px;
   padding: 10px;
+  width: 100%;
+  height: 100%;
+  max-width: 300px; /* 典型 UXP 面板宽度 */
 }
 
+/* 分区不再使用卡片化背景与圆角，保持一体化 */
 .section {
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 10px;
-  background: var(--bg-sb);
+  padding: 8px 0 12px 0; /* 原：4 0 8 0，适度增加上下内边距 */
+  border: none;
+  background: transparent;
 }
+
+/* 相邻模块顶部留更大的空间 */
+.section + .section { border-top: 1px solid var(--border);}
 
 .section-title {
   font-size: 12px;
-  opacity: 0.8;
-  margin-bottom: 8px;
+  opacity: 0.85;
+  margin-bottom: 8px; /* 原 6，稍增 */
 }
 
-.row { display: flex; gap: 8px; align-items: center; }
-.col { display: flex; flex-direction: column; gap: 6px; }
+.row { display: flex; gap: 8px; align-items: center; width: 100%; }
+.col { display: flex; flex-direction: column; gap: 10px; width: 100%; } /* 原 8 -> 10 */
 
-.actions {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  justify-content: space-between;
+.form-row { display: flex; align-items: center; margin-bottom: 5px ; width: 100%; }
+.form-row .label { min-width: 60px; color: var(--text); font-size: 12px; opacity: .9; text-align: left; } /* 左对齐 */
+.form-row .control { flex: 1 1 auto; min-width: 0; }
+
+/* 控件满宽但不超过面板（典型 300px 内） */
+.picker-full, .textarea-full, .textfield-full { width: 100%; max-width: 260px; }
+.textarea-tall { min-height: 120px; }
+
+.actions { display: flex; margin-top: 5px; align-items: center; justify-content: space-between; gap: 10px; width: 100%; } /* 左对齐 */
+.actions-left, .actions-right { display: flex; gap: 10px; align-items: center; }
+
+/* 左侧状态文本允许换行，并限制最大宽度，确保错误信息完整展示 */
+.status { 
+  flex: 0 1 auto; 
+  min-width: 0; 
+  max-width: 210px; 
+  font-size: 12px; 
+  opacity: 0.85; 
+  white-space: normal; 
+  overflow: visible; 
+  text-overflow: clip; 
+  word-break: break-word; 
 }
 
-.actions-left, .actions-right { display: flex; gap: 8px; align-items: center; }
-
-.notice { font-size: 12px; opacity: 0.85; }
+.notice { font-size: 10px; opacity: .3; margin: 5px 0 }
 .error { color: #ff5a5a; font-size: 12px; }
-.success { color: #4caf50; font-size: 12px; }
+.success { color: #4caf50; font-size: 12px; } 
+
+sp-picker {
+   width: 150px;
+   margin-left: 0; /* 去除右偏移，保持与标签左对齐 */
+}
+
+sp-action-button {
+  margin-right: 0; /* 由父容器 gap 负责间距 */
+}
+
+
+sp-radio-group {
+  margin-bottom: 5px;
+}
+
+.preset-preview {
+  margin: 6px 0 2px 0;
+  padding: 6px 8px;
+  font-family: 'SourceHanSansCN-Normal', monospace;
+  font-size: 12px;
+  color: var(--text);
+  background: rgba(255,255,255,0.04);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  max-height: 90px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
