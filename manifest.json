@@ -1,0 +1,77 @@
+{
+  "manifestVersion": 4,
+  "name": "自定义混合模式",
+  "version": "1.0.0",
+  "host": {
+    "app": "PS",
+    "minVersion": "23.0.0"
+  },
+  "main": "index.html",
+  "entrypoints": [
+    {
+      "id": "自定义混合模式",
+      "label": {
+        "default": "自定义混合模式"
+      },
+      "type": "panel",
+      "minimumSize": {
+        "width": 400,
+        "height": 650
+      },
+      "maximumSize": {
+        "width": 400,
+        "height": 650   
+      },
+      "preferredDockedSize": {
+        "width": 400,
+        "height": 650
+      },
+      "preferredFloatingSize": {
+        "width": 400,
+        "height": 650
+      },
+      "icons": [
+        {
+            "path": "icons/light-panel.png",
+            "width": 23,
+            "height": 23,
+            "scale": [1,2],
+            "theme": ["darkest", "dark"],
+            "species": ["chrome"]
+        },
+        {
+            "path": "icons/dark-panel.png",
+            "width": 23,
+            "height": 23,
+            "scale": [1,2],
+            "theme": ["lightest", "light"],
+            "species": ["chrome"]
+        }
+    ]
+}
+],
+"id": "com.listen2me.jwcustomformula",
+"icons": [
+{
+    "path": "icons/plugin.png",
+    "width": 48,
+    "height": 48,
+    "scale": [1,2],
+    "theme": ["darkest", "dark", "lightest", "light", "all"],
+    "species": ["pluginList"]
+}
+],
+"requiredPermissions": {
+"clipboard": "readAndWrite",
+"network": {
+    "domains": "all"
+},
+"allowCodeGenerationFromStrings": true,
+"launchProcess": {
+"schemes": ["http", "https"]
+}
+},
+"build": {
+"cssResources": ["src/styles/styles.css"]
+}
+}

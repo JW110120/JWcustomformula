@@ -1,0 +1,30 @@
+/* 公式编辑区相关样式 */
+.formula-editor {
+  width: 100%;
+}
+
+.formula-textarea {
+  width: 100%;
+  min-height: 96px;
+}
+
+.preset-summary {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: 11px;
+  opacity: 0.9;
+  white-space: pre-wrap;
+}
+
+.progress {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--border);
+  overflow: hidden;
+}
+
+.progress-inner {
+  height: 100%;
+  width: 0%;
+  background: #2680eb;
+  transition: width .2s ease;
+}
