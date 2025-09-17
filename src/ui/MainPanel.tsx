@@ -151,6 +151,10 @@ function useLayerList() {
 
       if (!initializedRef.current) {
         initializedRef.current = true;
+        // 首次初始化：若尚未有选中，按规则选择前两项作为默认值（过滤掉“自定义混合结果”）
+        const { firstId, secondId } = chooseDefaults(list);
+        if (!baseLayerId && firstId) setBaseLayerId(firstId);
+        if (!blendLayerId && secondId) setBlendLayerId(secondId);
       } else {
         // 若选中 id 丢失，尝试用“同名唯一匹配”恢复；否则清空
         if (!existsBase && baseLayerId != null) {
@@ -234,8 +238,8 @@ function useLayerList() {
     })();
   }, []);
 
-  return { layers, baseLayerId, blendLayerId, setBaseLayerId, setBlendLayerId, loading, error, optionsUpdatingRef };
-}
+return { layers, baseLayerId, blendLayerId, setBaseLayerId, setBlendLayerId, loading, error, optionsUpdatingRef };
+ }
 
 function usePresets() {
   const [presets, setPresets] = useState<PresetItem[]>([]);
@@ -279,6 +283,9 @@ const MainPanel: React.FC = () => {
   const selectedPresetNameRef = useRef<string | null>(null);
   // 新增：预设下拉的元素引用，用于绑定原生事件，确保在 UXP 自定义元素下能拿到值
   const presetPickerRef = useRef<any>(null);
+  // 新增：图层下拉的元素引用，改为通过原生事件保证取值稳定
+  const basePickerRef = useRef<any>(null);
+  const blendPickerRef = useRef<any>(null);
 
   const [nameInput, setNameInput] = useState('');
   const [exprInput, setExprInput] = useState(''); // 初始为空，使用占位提示“请输入新公式”
@@ -490,16 +497,44 @@ const MainPanel: React.FC = () => {
       await core.executeAsModal(async () => {
         const doc = app.activeDocument;
         const docIdNum = Number(doc.id);
-        const w = Number(doc.width);
-        const h = Number(doc.height);
-        const targetBounds = { left: 0, top: 0, right: w, bottom: h };
+        const parseUnit = (v: any) => {
+          if (typeof v === 'number' && Number.isFinite(v)) return v;
+          const s = String(v ?? '');
+          const n = parseFloat(s);
+          return Number.isFinite(n) ? n : 0;
+        };
+        let w = parseUnit((doc as any).width);
+        let h = parseUnit((doc as any).height);
+        if (!w || !h) {
+          try {
+            const b: any = (doc as any).bounds;
+            const L = parseUnit(b?.left ?? b?.[0]);
+            const T = parseUnit(b?.top ?? b?.[1]);
+            const R = parseUnit(b?.right ?? b?.[2]);
+            const B = parseUnit(b?.bottom ?? b?.[3]);
+            w = Math.max(0, R - L);
+            h = Math.max(0, B - T);
+          } catch {}
+        }
+        const targetBounds = {
+          left: 0,
+          top: 0,
+          right: Math.max(1, Math.round(w)),
+          bottom: Math.max(1, Math.round(h))
+        };
+
+        const baseLayerID = Number(baseId);
+        const blendLayerID = Number(blendId);
+        if (!Number.isFinite(baseLayerID) || !Number.isFinite(blendLayerID)) {
+          throw new Error('图层ID无效');
+        }
 
         // 获取像素：不强制 colorSpace，兼容背景图层返回 RGB（3 通道）
         const baseSurf = await imaging
-          .getPixels({ documentID: docIdNum, layerID: Number(baseId), bounds: targetBounds })
+          .getPixels({ documentID: docIdNum, layerID: baseLayerID, bounds: targetBounds })
           .catch((e: any) => { throw new Error('读取基底图层像素失败: ' + (e?.message || e)); });
         const blendSurf = await imaging
-          .getPixels({ documentID: docIdNum, layerID: Number(blendId), bounds: targetBounds })
+          .getPixels({ documentID: docIdNum, layerID: blendLayerID, bounds: targetBounds })
           .catch((e: any) => { throw new Error('读取混合图层像素失败: ' + (e?.message || e)); });
 
         const baseAB = await baseSurf.imageData.getData();
@@ -618,7 +653,8 @@ const MainPanel: React.FC = () => {
     const el = presetPickerRef.current as any;
     if (!el) return;
     const onEvt = (evt: any) => {
-      if (presetOptionsUpdatingRef.current) return;
+      // 仅忽略非用户触发的事件，避免在刷新候选项期间误丢用户点击
+      if (evt && 'isTrusted' in evt && (evt as any).isTrusted === false) return;
       const v = getEvtValue({ ...evt, currentTarget: el, target: el });
       const direct = v
         || (el?.value ?? '')
@@ -637,6 +673,35 @@ const MainPanel: React.FC = () => {
     };
   }, [mode, presets]);
 
+  // 新增：通过原生事件监听图层选择器，确保基底/混合图层与 React 状态严格同步
+  useEffect(() => {
+    const bindPicker = (el: any, setter: (v: string | null) => void) => {
+      if (!el) return () => {};
+      const onEvt = (evt: any) => {
+        // 刷新候选项期间忽略程序性事件，防止覆盖用户选择
+        if (layerOptionsUpdatingRef?.current) return;
+        const v = getEvtValue({ ...evt, currentTarget: el, target: el });
+        const direct = v
+          || (el?.value ?? '')
+          || (el?.selectedItem?.value ?? '')
+          || (typeof el?.selected === 'object' ? (el.selected?.value || el.selected?.getAttribute?.('value') || '') : (el?.selected ?? ''));
+        const next = direct ? String(direct) : '';
+        setter(next ? next : null);
+      };
+      el.addEventListener?.('change', onEvt);
+      el.addEventListener?.('input', onEvt);
+      el.addEventListener?.('sp-change', onEvt as any);
+      return () => {
+        el.removeEventListener?.('change', onEvt);
+        el.removeEventListener?.('input', onEvt);
+        el.removeEventListener?.('sp-change', onEvt as any);
+      };
+    };
+    const unbindBase = bindPicker(basePickerRef.current, (v) => setBaseLayerId(v));
+    const unbindBlend = bindPicker(blendPickerRef.current, (v) => setBlendLayerId(v));
+    return () => { unbindBase?.(); unbindBlend?.(); };
+  }, [layers]);
+
   return (
     <div className="app-container">
       <div className="panel">
@@ -648,10 +713,10 @@ const MainPanel: React.FC = () => {
             <div className="form-row">
               <div className="label">混合图层</div>
               <div className="control">
-                <sp-picker size="m" selects="single" className="picker-full" value={blendLayerId ?? undefined} {...(!layers.length ? { disabled: true } : {})} onChange={(e: any) => { if (layerOptionsUpdatingRef.current) return; if (e && 'isTrusted' in e && (e as any).isTrusted === false) return; const v = getEvtValue(e); setBlendLayerId(v ? v : null); }} onInput={(e: any) => { if (layerOptionsUpdatingRef.current) return; if (e && 'isTrusted' in e && (e as any).isTrusted === false) return; const v = getEvtValue(e); setBlendLayerId(v ? v : null); }}>
+                <sp-picker ref={blendPickerRef} size="m" selects="single" className="picker-full" value={blendLayerId ?? undefined} {...(!layers.length ? { disabled: true } : {})} onChange={(e: any) => { const v = getEvtValue(e); setBlendLayerId(v ? v : null); }} onInput={(e: any) => { const v = getEvtValue(e); setBlendLayerId(v ? v : null); }}>
                   <sp-menu>
                     {layers.map(l => (
-                      <sp-menu-item key={l.id} value={l.id}>{l.name}</sp-menu-item>
+                      <sp-menu-item key={l.id} value={l.id} onClick={() => setBlendLayerId(String(l.id))}>{l.name}</sp-menu-item>
                     ))}
                   </sp-menu>
                 </sp-picker>
@@ -661,10 +726,10 @@ const MainPanel: React.FC = () => {
             <div className="form-row">
               <div className="label">基底图层</div>
               <div className="control">
-                <sp-picker size="m" selects="single" className="picker-full" value={baseLayerId ?? undefined} {...(!layers.length ? { disabled: true } : {})} onChange={(e: any) => { if (layerOptionsUpdatingRef.current) return; if (e && 'isTrusted' in e && (e as any).isTrusted === false) return; const v = getEvtValue(e); setBaseLayerId(v ? v : null); }} onInput={(e: any) => { if (layerOptionsUpdatingRef.current) return; if (e && 'isTrusted' in e && (e as any).isTrusted === false) return; const v = getEvtValue(e); setBaseLayerId(v ? v : null); }}>
+                <sp-picker ref={basePickerRef} size="m" selects="single" className="picker-full" value={baseLayerId ?? undefined} {...(!layers.length ? { disabled: true } : {})} onChange={(e: any) => { const v = getEvtValue(e); setBaseLayerId(v ? v : null); }} onInput={(e: any) => { const v = getEvtValue(e); setBaseLayerId(v ? v : null); }}>
                   <sp-menu>
                     {layers.map(l => (
-                      <sp-menu-item key={l.id} value={l.id}>{l.name}</sp-menu-item>
+                      <sp-menu-item key={l.id} value={l.id} onClick={() => setBaseLayerId(String(l.id))}>{l.name}</sp-menu-item>
                     ))}
                   </sp-menu>
                 </sp-picker>
@@ -686,7 +751,7 @@ const MainPanel: React.FC = () => {
               <div className="form-row">
                 <div className="label">已有预设</div>
                 <div className="control">
-                  <sp-picker ref={presetPickerRef} size="m" selects="single" className="picker-full" selected={selectedPresetId ?? undefined} value={selectedPresetId ?? undefined} {...(presetsLoading || !presets.length ? { disabled: true } : {})} onChange={(e: any) => { if (presetOptionsUpdatingRef.current) return; const v = getEvtValue(e); setSelectedPresetId(v ? v : null); }} onInput={(e: any) => { if (presetOptionsUpdatingRef.current) return; const v = getEvtValue(e); setSelectedPresetId(v ? v : null); }}>
+                  <sp-picker ref={presetPickerRef} size="m" selects="single" className="picker-full" selected={selectedPresetId ?? undefined} value={selectedPresetId ?? undefined} {...(presetsLoading || !presets.length ? { disabled: true } : {})} onChange={(e: any) => { const v = getEvtValue(e); setSelectedPresetId(v ? v : null); }} onInput={(e: any) => { const v = getEvtValue(e); setSelectedPresetId(v ? v : null); }}>
                     <sp-menu>
                       {presets.map(p => (<sp-menu-item key={p.id} value={p.id} onClick={() => setSelectedPresetId(String(p.id))}>{p.name}</sp-menu-item>))}
                     </sp-menu>
@@ -743,9 +808,9 @@ const MainPanel: React.FC = () => {
               </div>
             </div>
           )}
-        </div>
 
         {/* 底部：操作 */}
+      </div>
         <div className="section">
           <div className="actions">
             <div className={`status ${/(失败|错误|无法|Error|Failed|不能相同|不存在|请选择|无效)/i.test(status) ? 'error' : status ? 'success' : 'notice'}`}>
