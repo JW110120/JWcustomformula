@@ -29,6 +29,22 @@ import {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any 
 declare const _require: any;
 
+// 统一从事件中获取 value 的工具，兼容不同宿主与 ShadowDOM 事件
+const getEvtValue = (e: any): string => {
+  try {
+    // 优先 detail.value（自定义事件），再 target.value（子项），最后 currentTarget.value（容器）
+    const dv = e?.detail?.value;
+    if (dv !== undefined && dv !== null) return String(dv);
+    const tv = e?.target?.value;
+    if (tv !== undefined && tv !== null) return String(tv);
+    const cv = e?.currentTarget?.value;
+    if (cv !== undefined && cv !== null) return String(cv);
+    return '';
+  } catch {
+    return '';
+  }
+};
+
 function useLayerList() {
   type LayerInfo = { id: string; name: string };
   const [layers, setLayers] = useState<LayerInfo[]>([]);
@@ -185,6 +201,8 @@ const MainPanel: React.FC = () => {
   // 新增：缓存“新公式”模式下的输入值，便于在模式切换来回时恢复（保持占位符逻辑）
   const customNameCacheRef = useRef<string>('');
   const customExprCacheRef = useRef<string>('');
+  // 新增：单选组引用，用于在事件不携带值时直接读取当前选中值
+  const modeGroupRef = useRef<any>(null);
 
   // 新增：当状态为成功类提示时，数秒后自动恢复默认提示
   useEffect(() => {
@@ -295,10 +313,7 @@ const MainPanel: React.FC = () => {
       setStatus('请选择基底图层与混合图层');
       return;
     }
-    if (baseLayerId === blendLayerId) {
-      setStatus('基底图层与混合图层不能相同');
-      return;
-    }
+    // 允许两者相同，不再限制
     // 锁定当前所选 ID 并校验其仍存在，避免在执行过程中被图层变化影响
     const baseId = baseLayerId;
     const blendId = blendLayerId;
@@ -351,40 +366,37 @@ const MainPanel: React.FC = () => {
         const h = Number(doc.height);
         const targetBounds = { left: 0, top: 0, right: w, bottom: h };
 
-        // 像素读取的兼容封装
-        const toSurface = (x: any) => (x?.imageData ?? x?.pixelData ?? x);
-        const readBuffer = async (surf: any): Promise<Uint8Array> => {
-          if (!surf) throw new Error('无法读取像素数据');
-          if (typeof surf.getData === 'function') {
-            const ab = await surf.getData();
-            return new Uint8Array(ab);
-          }
-          if (surf.data) {
-            const d: any = surf.data;
-            if (d instanceof Uint8Array) return d;
-            if (d?.buffer) return new Uint8Array(d.buffer);
-          }
-          if (surf.buffer) return new Uint8Array(surf.buffer);
-          throw new Error('不支持的像素数据格式');
-        };
+        // 获取像素：不强制 colorSpace，兼容背景图层返回 RGB（3 通道）
+        const baseSurf = await imaging
+          .getPixels({ documentID: docIdNum, layerID: Number(baseId), bounds: targetBounds })
+          .catch((e: any) => { throw new Error('读取基底图层像素失败: ' + (e?.message || e)); });
+        const blendSurf = await imaging
+          .getPixels({ documentID: docIdNum, layerID: Number(blendId), bounds: targetBounds })
+          .catch((e: any) => { throw new Error('读取混合图层像素失败: ' + (e?.message || e)); });
 
-        // 获取像素（整幅画布尺寸，RGBA 8bit）
-        const basePx = await imaging.getPixels({ documentID: docIdNum, layerID: Number(baseId), bounds: targetBounds, colorSpace: 'RGBA' });
-        const blendPx = await imaging.getPixels({ documentID: docIdNum, layerID: Number(blendId), bounds: targetBounds, colorSpace: 'RGBA' });
-        const baseBuf = await readBuffer(toSurface(basePx));
-        const blendBuf = await readBuffer(toSurface(blendPx));
+        const baseAB = await baseSurf.imageData.getData();
+        const blendAB = await blendSurf.imageData.getData();
+        const baseBuf = new Uint8Array(baseAB);
+        const blendBuf = new Uint8Array(blendAB);
+
+        // 计算每像素字节数（3 或 4），以兼容背景图层
+        const baseBpp = Math.max(3, Math.min(4, Math.round(baseBuf.length / (w * h))));
+        const blendBpp = Math.max(3, Math.min(4, Math.round(blendBuf.length / (w * h))));
 
         const outBuf = new Uint8Array(w * h * 4);
         for (let i = 0, p = 0; i < w * h; i++, p += 4) {
-          const rb = baseBuf[p] / 255;
-          const gb = baseBuf[p + 1] / 255;
-          const bb = baseBuf[p + 2] / 255;
-          const ab = (baseBuf[p + 3] ?? 255) / 255;
+          const bi = i * baseBpp;
+          const si = i * blendBpp;
 
-          const rs = blendBuf[p] / 255;
-          const gs = blendBuf[p + 1] / 255;
-          const bs = blendBuf[p + 2] / 255;
-          const as = (blendBuf[p + 3] ?? 255) / 255;
+          const rb = (baseBuf[bi] ?? 0) / 255;
+          const gb = (baseBuf[bi + 1] ?? 0) / 255;
+          const bb = (baseBuf[bi + 2] ?? 0) / 255;
+          const ab = (baseBpp === 4 ? baseBuf[bi + 3] : 255) / 255;
+
+          const rs = (blendBuf[si] ?? 0) / 255;
+          const gs = (blendBuf[si + 1] ?? 0) / 255;
+          const bs = (blendBuf[si + 2] ?? 0) / 255;
+          const as = (blendBpp === 4 ? blendBuf[si + 3] : 255) / 255;
 
           const res = engine({ rb, gb, bb, ab, rs, gs, bs, as });
           const r = Math.round((res[0] ?? 0) * 255);
@@ -395,29 +407,34 @@ const MainPanel: React.FC = () => {
           outBuf[p] = r; outBuf[p + 1] = g; outBuf[p + 2] = b; outBuf[p + 3] = a;
         }
 
-        const outImgData = await imaging.createImageDataFromBuffer(outBuf, {
+        // 回写像素（采用与 pixelDataProcessor 一致的参数）
+        const outImageData = await imaging.createImageDataFromBuffer(outBuf, {
           width: w,
           height: h,
+          colorSpace: 'RGB',
+          pixelFormat: 'RGBA',
           components: 4,
-          chunky: true,
-          colorProfile: 'sRGB IEC61966-2.1',
-          colorSpace: 'RGBA'
+          componentSize: 8
         });
 
         const resultLayer = app.activeDocument.activeLayers[0];
         await imaging.putPixels({
           documentID: docIdNum,
           layerID: Number(resultLayer.id),
-          targetBounds: targetBounds,
-          imageData: outImgData
-        });
+          imageData: outImageData,
+          targetBounds: targetBounds
+        }).catch((e: any) => { throw new Error('写入结果像素失败: ' + (e?.message || e)); });
 
-        outImgData.dispose?.();
+        // 释放临时资源
+        outImageData.dispose?.();
+        baseSurf.imageData?.dispose?.();
+        blendSurf.imageData?.dispose?.();
       }, { commandName: 'Apply Custom Formula' });
 
       setStatus(`已应用公式到图层“${resultName}”`);
     } catch (e: any) {
-      setStatus(`应用失败：${e?.message || '未知错误'}`);
+      const msg = typeof e === 'string' ? e : (e?.message || '未知错误');
+      setStatus(`应用失败：${msg}`);
     }
   };
 
@@ -441,11 +458,15 @@ const MainPanel: React.FC = () => {
     });
   };
 
-  // 处理模式切换（兼容 change/input 以及不同宿主环境的事件细节）
+  // 处理模式切换（仅使用 change，避免 change 和 input 双触发导致状态错乱）
   const handleModeChange = (e: any) => {
-    const target = e?.currentTarget || e?.target;
-    const next = target?.selected ?? target?.value ?? e?.detail?.value;
-    if (next === 'preset' || next === 'custom') switchMode(next);
+    const v = getEvtValue(e);
+    const group = modeGroupRef.current as any;
+    const refVal = (group?.value ?? group?.selected ?? '').toString();
+    const next = (v || refVal || '').toString();
+    if (next !== 'preset' && next !== 'custom') return;
+    if (next === mode) return;
+    switchMode(next as any);
   };
 
   return (
@@ -459,9 +480,11 @@ const MainPanel: React.FC = () => {
             <div className="form-row">
               <div className="label">混合图层</div>
               <div className="control">
-                <sp-picker size="m" selects="single" className="picker-full" selected={blendLayerId || ''} {...(!layers.length ? { disabled: true } : {})} onChange={(e: any) => setBlendLayerId(String(e.target.value))} onInput={(e: any) => setBlendLayerId(String(e.target.value))}>
+                <sp-picker size="m" selects="single" className="picker-full" selected={blendLayerId || ''} {...(!layers.length ? { disabled: true } : {})} onChange={(e: any) => setBlendLayerId(String((e as any).target?.value))} onInput={(e: any) => setBlendLayerId(String((e as any).target?.value))}>
                   <sp-menu>
-                    {layers.map(l => (<sp-menu-item key={l.id} value={l.id} selected={l.id === blendLayerId}>{l.name}</sp-menu-item>))}
+                    {layers.map(l => (
+                      <sp-menu-item key={l.id} value={l.id} selected={l.id === blendLayerId}>{l.name}</sp-menu-item>
+                    ))}
                   </sp-menu>
                 </sp-picker>
               </div>  
@@ -470,9 +493,11 @@ const MainPanel: React.FC = () => {
             <div className="form-row">
               <div className="label">基底图层</div>
               <div className="control">
-                <sp-picker size="m" selects="single" className="picker-full" selected={baseLayerId || ''} {...(!layers.length ? { disabled: true } : {})} onChange={(e: any) => setBaseLayerId(String(e.target.value))} onInput={(e: any) => setBaseLayerId(String(e.target.value))}>
+                <sp-picker size="m" selects="single" className="picker-full" selected={baseLayerId || ''} {...(!layers.length ? { disabled: true } : {})} onChange={(e: any) => setBaseLayerId(String((e as any).target?.value))} onInput={(e: any) => setBaseLayerId(String((e as any).target?.value))}>
                   <sp-menu>
-                    {layers.map(l => (<sp-menu-item key={l.id} value={l.id} selected={l.id === baseLayerId}>{l.name}</sp-menu-item>))}
+                    {layers.map(l => (
+                      <sp-menu-item key={l.id} value={l.id} selected={l.id === baseLayerId}>{l.name}</sp-menu-item>
+                    ))}
                   </sp-menu>
                 </sp-picker>
               </div>
@@ -483,17 +508,17 @@ const MainPanel: React.FC = () => {
 
         {/* 中部：预设/新公式（切换单选） */}
         <div className="section">
-          <sp-radio-group selected={mode} name="formulaMode" onChange={handleModeChange} onInput={handleModeChange}>
-            <sp-radio value="preset">公式预设</sp-radio>
-            <sp-radio value="custom">新公式</sp-radio>
+          <sp-radio-group ref={modeGroupRef} selected={mode} name="formulaMode" onChange={handleModeChange} onInput={handleModeChange}>
+            <sp-radio value="custom" onClick={() => switchMode('custom')}>新公式</sp-radio>
+            <sp-radio value="preset" onClick={() => switchMode('preset')}>公式预设</sp-radio>
           </sp-radio-group>
 
-          {mode === 'preset' && (
+          {mode === "preset" && (
             <div className="col">
               <div className="form-row">
                 <div className="label">已有预设</div>
                 <div className="control">
-                  <sp-picker size="m" selects="single" className="picker-full" selected={selectedPresetId || ''} {...(presetsLoading || !presets.length ? { disabled: true } : {})} onChange={(e: any) => setSelectedPresetId(String(e.target.value))} onInput={(e: any) => setSelectedPresetId(String(e.target.value))}>
+                  <sp-picker size="m" selects="single" className="picker-full" selected={selectedPresetId || ''} {...(presetsLoading || !presets.length ? { disabled: true } : {})} onChange={(e: any) => setSelectedPresetId(String((e as any).target?.value))} onInput={(e: any) => setSelectedPresetId(String((e as any).target?.value))}>
                     <sp-menu>
                       {presets.map(p => (<sp-menu-item key={p.id} value={p.id} selected={p.id === selectedPresetId}>{p.name}</sp-menu-item>))}
                     </sp-menu>
@@ -519,14 +544,15 @@ const MainPanel: React.FC = () => {
             </div>
           )}
 
-          {mode === 'custom' && (
+          {mode === "custom" && (
             <div className="col">
               <div className="form-row">
                 <div className="label">新建名称</div>
                 <div className="control">
-                  <sp-textfield className="textfield-full" value={nameInput} placeholder="请在此处命名" onInput={(e: any) => setNameInput(String(e.target.value))}></sp-textfield>
+                  <sp-textfield className="textfield-full" value={nameInput} placeholder="请在此处命名" onInput={(e: any) => setNameInput(String((e as any).target?.value))}></sp-textfield>
                 </div>
               </div>
+
               <div className="form-row">
                 <div className="label">新建公式</div>
                 <div className="control">
@@ -534,12 +560,14 @@ const MainPanel: React.FC = () => {
                     className="textfield-full"
                     value={exprInput}
                     placeholder="请输入新公式"
-                    onInput={(e: any) => setExprInput(String(e.target.value))}
+                    onInput={(e: any) => setExprInput(String((e as any).target?.value))}
                     title={`变量：\nB = 基底图层像素向量 [rb, gb, bb, ab]，T = 混合图层像素向量 [rs, gs, bs, as]\n示例：B+T（逐通道相加），\nB*0.5+T*0.5（平均），\nclamp(B+T,0,1)（相加并钳制）。\n\n函数：\nabs 绝对值；min 最小；max 最大；floor 向下取整；ceil 向上取整；round 四舍五入；\nsqrt 平方根；pow 幂；exp 指数；log 对数；\nclamp(x,lo,hi) 限幅；mix(a,b,t) 线性插值；\nstep(edge,x) 阶跃；smoothstep(e0,e1,x) 平滑阶跃；\nlum(r,g,b) 亮度；saturate(x) 限幅到0..1。`}
                   ></sp-textfield>
                 </div>
               </div>
+
               {exprError ? <div className="error">{exprError}</div> : <div className="notice" title="在输入框悬停可查看变量与函数中文说明">在输入框悬停查看全部说明</div>}
+
               <div className="actions">
                 <div className="actions-left">
                   <sp-action-button emphasized onClick={onSavePreset} {...((!!exprError || !nameInput.trim()) ? { disabled: true } : {})}>保存为预设</sp-action-button>
@@ -552,7 +580,7 @@ const MainPanel: React.FC = () => {
         {/* 底部：操作 */}
         <div className="section">
           <div className="actions">
-            <div className={`status ${/失败|错误|无法|Error|Failed/i.test(status) ? 'error' : status ? 'success' : 'notice'}`}>
+            <div className={`status ${/(失败|错误|无法|Error|Failed|不能相同|不存在|请选择|无效)/i.test(status) ? 'error' : status ? 'success' : 'notice'}`}>
               {status || '编写/选择公式后点击“应用”'}
             </div>
             <sp-action-button emphasized onClick={onApply} {...((!!exprError || !exprInput.trim() || !baseLayerId || !blendLayerId) ? { disabled: true } : {})}>应用</sp-action-button>
