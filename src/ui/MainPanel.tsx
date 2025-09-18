@@ -238,8 +238,8 @@ function useLayerList() {
     })();
   }, []);
 
-return { layers, baseLayerId, blendLayerId, setBaseLayerId, setBlendLayerId, loading, error, optionsUpdatingRef };
- }
+  return { layers, baseLayerId, blendLayerId, setBaseLayerId, setBlendLayerId, loading, error, optionsUpdatingRef };
+}
 
 function usePresets() {
   const [presets, setPresets] = useState<PresetItem[]>([]);
@@ -516,12 +516,9 @@ const MainPanel: React.FC = () => {
             h = Math.max(0, B - T);
           } catch {}
         }
-        const targetBounds = {
-          left: 0,
-          top: 0,
-          right: Math.max(1, Math.round(w)),
-          bottom: Math.max(1, Math.round(h))
-        };
+        // 文档像素尺寸（整数）
+        const DOC_W = Math.max(1, Math.round(w));
+        const DOC_H = Math.max(1, Math.round(h));
 
         const baseLayerID = Number(baseId);
         const blendLayerID = Number(blendId);
@@ -529,12 +526,56 @@ const MainPanel: React.FC = () => {
           throw new Error('图层ID无效');
         }
 
-        // 获取像素：不强制 colorSpace，兼容背景图层返回 RGB（3 通道）
+        // 帮助函数：在图层树里按 id 查找图层
+        const findLayerById = (ls: any[], id: number): any | null => {
+          for (const l of ls || []) {
+            if (Number(l.id) === id) return l;
+            if (l.layers && l.layers.length) {
+              const m = findLayerById(l.layers, id);
+              if (m) return m;
+            }
+          }
+          return null;
+        };
+        // 帮助：解析 bounds 为整数像素矩形，并做必要的扩展/收缩
+        const toRect = (b: any) => {
+          const L = Math.floor(parseUnit(b?.left ?? b?.[0]));
+          const T = Math.floor(parseUnit(b?.top ?? b?.[1]));
+          const R = Math.ceil(parseUnit(b?.right ?? b?.[2]));
+          const B = Math.ceil(parseUnit(b?.bottom ?? b?.[3]));
+          return { left: L, top: T, right: R, bottom: B };
+        };
+        const clampRect = (r: { left: number; top: number; right: number; bottom: number; }) => ({
+          left: Math.max(0, Math.min(DOC_W, r.left)),
+          top: Math.max(0, Math.min(DOC_H, r.top)),
+          right: Math.max(0, Math.min(DOC_W, r.right)),
+          bottom: Math.max(0, Math.min(DOC_H, r.bottom)),
+        });
+        const rectW = (r: { left: number; right: number; }) => Math.max(0, r.right - r.left);
+        const rectH = (r: { top: number; bottom: number; }) => Math.max(0, r.bottom - r.top);
+        const unionRect = (a: any, b: any) => ({
+          left: Math.min(a.left, b.left),
+          top: Math.min(a.top, b.top),
+          right: Math.max(a.right, b.right),
+          bottom: Math.max(a.bottom, b.bottom)
+        });
+
+        // 找到两个图层与其绝对 bounds
+        const baseLayer = findLayerById((doc as any).layers, baseLayerID);
+        const blendLayer = findLayerById((doc as any).layers, blendLayerID);
+        if (!baseLayer || !blendLayer) throw new Error('无法找到指定图层');
+        const baseRectDoc = clampRect(toRect((baseLayer as any).bounds));
+        const blendRectDoc = clampRect(toRect((blendLayer as any).bounds));
+        if (rectW(baseRectDoc) === 0 || rectH(baseRectDoc) === 0 || rectW(blendRectDoc) === 0 || rectH(blendRectDoc) === 0) {
+          throw new Error('选中图层尺寸为空');
+        }
+
+        // 按各自图层的绝对 bounds 读取像素（RGBA/8bit）
         const baseSurf = await imaging
-          .getPixels({ documentID: docIdNum, layerID: baseLayerID, bounds: targetBounds })
+          .getPixels({ documentID: docIdNum, layerID: baseLayerID, bounds: baseRectDoc, colorSpace: 'RGB', pixelFormat: 'RGBA', componentSize: 8 })
           .catch((e: any) => { throw new Error('读取基底图层像素失败: ' + (e?.message || e)); });
         const blendSurf = await imaging
-          .getPixels({ documentID: docIdNum, layerID: blendLayerID, bounds: targetBounds })
+          .getPixels({ documentID: docIdNum, layerID: blendLayerID, bounds: blendRectDoc, colorSpace: 'RGB', pixelFormat: 'RGBA', componentSize: 8 })
           .catch((e: any) => { throw new Error('读取混合图层像素失败: ' + (e?.message || e)); });
 
         const baseAB = await baseSurf.imageData.getData();
@@ -542,38 +583,100 @@ const MainPanel: React.FC = () => {
         const baseBuf = new Uint8Array(baseAB);
         const blendBuf = new Uint8Array(blendAB);
 
-        // 计算每像素字节数（3 或 4），以兼容背景图层
-        const baseBpp = Math.max(3, Math.min(4, Math.round(baseBuf.length / (w * h))));
-        const blendBpp = Math.max(3, Math.min(4, Math.round(blendBuf.length / (w * h))));
+        // 使用返回的图像尺寸为准
+        const baseW = Math.max(1, Number((baseSurf.imageData as any).width));
+        const baseH = Math.max(1, Number((baseSurf.imageData as any).height));
+        const blendW = Math.max(1, Number((blendSurf.imageData as any).width));
+        const blendH = Math.max(1, Number((blendSurf.imageData as any).height));
 
-        const outBuf = new Uint8Array(w * h * 4);
-        for (let i = 0, p = 0; i < w * h; i++, p += 4) {
-          const bi = i * baseBpp;
-          const si = i * blendBpp;
+        // 计算每行步幅（row stride）
+        const safeStride = (len: number, h: number, w: number) => {
+          if (h <= 0) return w * 4;
+          const s = Math.floor(len / h);
+          if (s >= w * 4 && s % 4 === 0) return s;
+          return w * 4;
+        };
+        const baseStride = safeStride(baseBuf.length, baseH, baseW);
+        const blendStride = safeStride(blendBuf.length, blendH, blendW);
 
-          const rb = (baseBuf[bi] ?? 0) / 255;
-          const gb = (baseBuf[bi + 1] ?? 0) / 255;
-          const bb = (baseBuf[bi + 2] ?? 0) / 255;
-          const ab = (baseBpp === 4 ? baseBuf[bi + 3] : 255) / 255;
+        // 计算联合写回区域（绝对坐标）
+        const unionDoc = clampRect(unionRect(baseRectDoc, blendRectDoc));
+        const UW = rectW(unionDoc);
+        const UH = rectH(unionDoc);
 
-          const rs = (blendBuf[si] ?? 0) / 255;
-          const gs = (blendBuf[si + 1] ?? 0) / 255;
-          const bs = (blendBuf[si + 2] ?? 0) / 255;
-          const as = (blendBpp === 4 ? blendBuf[si + 3] : 255) / 255;
+        // 计算“联合区域坐标”到各自图层缓冲的偏移（以像素为单位）
+        const deltaXB = baseRectDoc.left - unionDoc.left;
+        const deltaYB = baseRectDoc.top - unionDoc.top;
+        const deltaXS = blendRectDoc.left - unionDoc.left;
+        const deltaYS = blendRectDoc.top - unionDoc.top;
 
-          const res = engine({ rb, gb, bb, ab, rs, gs, bs, as });
-          const r = Math.round((res[0] ?? 0) * 255);
-          const g = Math.round((res[1] ?? 0) * 255);
-          const b = Math.round((res[2] ?? 0) * 255);
-          const a = Math.round((res[3] !== undefined ? res[3] : 1) * 255);
+        const outBuf = new Uint8Array(UW * UH * 4);
+        for (let y = 0; y < UH; y++) {
+          const rowOut = y * UW * 4;
+          // 对应到各自源缓冲的行起点（可能为负，后面判断）
+          const yb = y - deltaYB;
+          const ys = y - deltaYS;
+          const rowBase = yb * baseStride;
+          const rowBlend = ys * blendStride;
 
-          outBuf[p] = r; outBuf[p + 1] = g; outBuf[p + 2] = b; outBuf[p + 3] = a;
+          for (let x = 0; x < UW; x++) {
+            const p = rowOut + x * 4;
+            const xb = x - deltaXB;
+            const xs = x - deltaXS;
+
+            // 分别从两层取样；若越界则按完全透明处理
+            let rb = 0, gb = 0, bb = 0, ab = 0;
+            if (yb >= 0 && yb < baseH && xb >= 0 && xb < baseW) {
+              const bi = rowBase + xb * 4;
+              rb = (baseBuf[bi] ?? 0) / 255;
+              gb = (baseBuf[bi + 1] ?? 0) / 255;
+              bb = (baseBuf[bi + 2] ?? 0) / 255;
+              ab = (baseBuf[bi + 3] ?? 0) / 255;
+            }
+
+            let rs = 0, gs = 0, bs = 0, as = 0;
+            if (ys >= 0 && ys < blendH && xs >= 0 && xs < blendW) {
+              const si = rowBlend + xs * 4;
+              rs = (blendBuf[si] ?? 0) / 255;
+              gs = (blendBuf[si + 1] ?? 0) / 255;
+              bs = (blendBuf[si + 2] ?? 0) / 255;
+              as = (blendBuf[si + 3] ?? 0) / 255;
+            }
+
+            // 预乘：将颜色按自身 alpha 乘权，确保“透明即无贡献”
+            const prb = rb * ab; const pgb = gb * ab; const pbb = bb * ab;
+            const prs = rs * as; const pgs = gs * as; const pbs = bs * as;
+
+            const res = engine({ rb: prb, gb: pgb, bb: pbb, ab, rs: prs, gs: pgs, bs: pbs, as });
+
+            // 输出 alpha：若公式未给出，使用标准 over（as + ab − as*ab）
+            const aOut = Math.max(0, Math.min(1, (res[3] !== undefined ? res[3] : (as + ab - as * ab))));
+
+            // 引擎返回的 r/g/b 按“预乘域”解释，再进行反预乘恢复至直通道
+            const rp = Math.max(0, Math.min(1, Number(res[0] ?? 0)));
+            const gp = Math.max(0, Math.min(1, Number(res[1] ?? 0)));
+            const bp = Math.max(0, Math.min(1, Number(res[2] ?? 0)));
+
+            // 物理上预乘色不应超过 alpha，这里做一次限幅，避免数值导致反预乘 > 1
+            const rpClamped = Math.min(rp, aOut);
+            const gpClamped = Math.min(gp, aOut);
+            const bpClamped = Math.min(bp, aOut);
+
+            const r = aOut > 0 ? Math.round((rpClamped / aOut) * 255) : 0;
+            const g = aOut > 0 ? Math.round((gpClamped / aOut) * 255) : 0;
+            const b = aOut > 0 ? Math.round((bpClamped / aOut) * 255) : 0;
+            const a = Math.round(aOut * 255);
+
+            outBuf[p] = r; outBuf[p + 1] = g; outBuf[p + 2] = b; outBuf[p + 3] = a;
+          }
         }
 
-        // 回写像素（采用与 pixelDataProcessor 一致的参数）
+        // 在“联合区域”的绝对位置写回，避免放到(0,0)
+        const writeBounds = { left: unionDoc.left, top: unionDoc.top, right: unionDoc.right, bottom: unionDoc.bottom };
+
         const outImageData = await imaging.createImageDataFromBuffer(outBuf, {
-          width: w,
-          height: h,
+          width: UW,
+          height: UH,
           colorSpace: 'RGB',
           pixelFormat: 'RGBA',
           components: 4,
@@ -585,14 +688,14 @@ const MainPanel: React.FC = () => {
           documentID: docIdNum,
           layerID: Number(resultLayer.id),
           imageData: outImageData,
-          targetBounds: targetBounds
+          targetBounds: writeBounds
         }).catch((e: any) => { throw new Error('写入结果像素失败: ' + (e?.message || e)); });
 
         // 释放临时资源
         outImageData.dispose?.();
         baseSurf.imageData?.dispose?.();
         blendSurf.imageData?.dispose?.();
-      }, { commandName: 'Apply Custom Formula' });
+      }, { commandName: '正在生成自定义混合模式的结果，请稍等...' });
 
       setStatus(`已应用公式到图层“${resultName}”`);
     } catch (e: any) {
@@ -702,16 +805,28 @@ const MainPanel: React.FC = () => {
     return () => { unbindBase?.(); unbindBlend?.(); };
   }, [layers]);
 
+  // 预览格式化：为运算符添加空格并放大显示，同时将历史写法中的 T 显示为 S（仅影响预览，不影响实际编译）
+  const renderExprForPreview = (raw: string) => {
+    const text = String(raw || '').replace(/\bT\b/g, 'S');
+    const parts = text.split(/(\+|\-|\*|\/|%|\?|\:|,|<|>)/g);
+    return parts.map((p, idx) => {
+      if (/^[+\-*/%?:,<>]$/.test(p)) {
+        return <span key={`op-${idx}`} className="op"> {p} </span>;
+      }
+      return <span key={`tk-${idx}`}>{p}</span>;
+    });
+  };
+
   return (
     <div className="app-container">
       <div className="panel">
         {/* 顶部：图层选择 */}
-        <div className="section">
+        <div className="section-header">
           <div className="section-title">选择图层</div>
           <div className="col">
             {/* 先显示混合图层 */}
             <div className="form-row">
-              <div className="label">混合图层</div>
+              <div className="label">混合图层（S）</div>
               <div className="control">
                 <sp-picker ref={blendPickerRef} size="m" selects="single" className="picker-full" value={blendLayerId ?? undefined} {...(!layers.length ? { disabled: true } : {})} onChange={(e: any) => { const v = getEvtValue(e); setBlendLayerId(v ? v : null); }} onInput={(e: any) => { const v = getEvtValue(e); setBlendLayerId(v ? v : null); }}>
                   <sp-menu>
@@ -724,7 +839,7 @@ const MainPanel: React.FC = () => {
             </div>
             {/* 再显示基底图层 */}
             <div className="form-row">
-              <div className="label">基底图层</div>
+              <div className="label">基底图层（B）</div>
               <div className="control">
                 <sp-picker ref={basePickerRef} size="m" selects="single" className="picker-full" value={baseLayerId ?? undefined} {...(!layers.length ? { disabled: true } : {})} onChange={(e: any) => { const v = getEvtValue(e); setBaseLayerId(v ? v : null); }} onInput={(e: any) => { const v = getEvtValue(e); setBaseLayerId(v ? v : null); }}>
                   <sp-menu>
@@ -740,7 +855,7 @@ const MainPanel: React.FC = () => {
         </div>
 
         {/* 中部：预设/新公式（切换单选） */}
-        <div className="section">
+        <div className={`section-body ${mode === 'custom' ? 'no-scroll' : ''}`}>
           <sp-radio-group ref={modeGroupRef} selected={mode} name="formulaMode" onChange={handleModeChange} onInput={handleModeChange}>
             <sp-radio value="custom" onClick={() => switchMode('custom')}>新公式</sp-radio>
             <sp-radio value="preset" onClick={() => switchMode('preset')}>公式预设</sp-radio>
@@ -759,10 +874,11 @@ const MainPanel: React.FC = () => {
                 </div>
               </div>
 
-              {/* 预览当前预设的公式内容：严格与选择同步；未选则为空 */}
-              <div className="preset-preview" title={selectedPreset?.formula?.expr ?? ''}>
-                {selectedPreset?.formula?.expr ?? ''}
-              </div>
+              {selectedPreset && (selectedPreset.formula?.expr || '').trim() ? (
+                <div className="preset-preview" title={selectedPreset?.formula?.expr || ''}>
+                  {renderExprForPreview(selectedPreset.formula?.expr || '')}
+                </div>
+              ) : null}
 
               {presetError ? <div className="error">{presetError}</div> : null}
               <div className="actions">
@@ -794,7 +910,7 @@ const MainPanel: React.FC = () => {
                     value={exprInput}
                     placeholder="请输入新公式"
                     onInput={(e: any) => setExprInput(String((e as any).target?.value))}
-                    title={`变量：\nB = 基底图层像素向量 [rb, gb, bb, ab]，T = 混合图层像素向量 [rs, gs, bs, as]\n示例：B+T（逐通道相加），\nB*0.5+T*0.5（平均），\nclamp(B+T,0,1)（相加并钳制）。\n\n函数：\nabs 绝对值；min 最小；max 最大；floor 向下取整；ceil 向上取整；round 四舍五入；\nsqrt 平方根；pow 幂；exp 指数；log 对数；\nclamp(x,lo,hi) 限幅；mix(a,b,t) 线性插值；\nstep(edge,x) 阶跃；smoothstep(e0,e1,x) 平滑阶跃；\nlum(r,g,b) 亮度；saturate(x) 限幅到0..1。`}
+                    title={`变量：\nB = 基底图层像素向量 [rb, gb, bb, ab]；S = 源图层像素向量 [rs, gs, bs, as]。\n通道标量：rb gb bb ab / rs gs bs as，范围 0..1。\n示例：B+S（逐通道相加），B*0.5+S*0.5（平均），clamp(B+S,0,1)（相加并钳制到 0..1）。\n\n函数与参数：\nabs(x) 绝对值；min(a,b)/max(a,b) 最小/最大；floor(x)/ceil(x)/round(x) 取整；\nsqrt(x) 平方根；pow(x,y) 幂；exp(x) 指数；log(x) 自然对数；\nclamp(x, lo, hi) 将 x 限制到 [lo,hi]；\nmix(a, b, t) 线性插值（t=0 得 a，t=1 得 b）；\nstep(edge, x) 阶跃函数（x<edge→0，否则 1）；\nsmoothstep(e0, e1, x) 平滑阶跃（x 在 e0..e1 平滑过渡）；\nlum(r, g, b) 亮度近似；saturate(x) 等同 clamp(x,0,1)。`}
                   ></sp-textfield>
                 </div>
               </div>
@@ -808,10 +924,10 @@ const MainPanel: React.FC = () => {
               </div>
             </div>
           )}
+        </div>
 
-        {/* 底部：操作 */}
-      </div>
-        <div className="section">
+        {/* 底部：操作（固定） */}
+        <div className="section-footer">
           <div className="actions">
             <div className={`status ${/(失败|错误|无法|Error|Failed|不能相同|不存在|请选择|无效)/i.test(status) ? 'error' : status ? 'success' : 'notice'}`}>
               {status || '编写/选择公式后点击“应用”'}
@@ -822,7 +938,6 @@ const MainPanel: React.FC = () => {
                   const exprOk = !!(selectedPreset && (selectedPreset.formula?.expr || '').trim());
                   return (!exprOk || !baseLayerId || !blendLayerId) ? { disabled: true } : {};
                 }
-                // custom 模式
                 return ((!!exprError || !exprInput.trim() || !baseLayerId || !blendLayerId) ? { disabled: true } : {});
               })())
             }>应用</sp-action-button>

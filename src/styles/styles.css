@@ -29,44 +29,37 @@ html, body, #root {
 .panel {
   display: flex;
   flex-direction: column;
-  gap: 12px;
   padding: 10px;
   width: 100%;
   height: 100%;
-  max-width: 300px; /* 典型 UXP 面板宽度 */
 }
 
-/* 分区不再使用卡片化背景与圆角，保持一体化 */
-.section {
-  padding: 8px 0 12px 0; /* 原：4 0 8 0，适度增加上下内边距 */
-  border: none;
-  background: transparent;
-}
+.section-header { flex: 0 0 auto; padding: 8px 0 12px 0; border-bottom: 1px solid var(--border); }
+.section-body { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 8px 0 12px 0; }
+.section-body.no-scroll { overflow: hidden; }
+.section-footer { flex: 0 0 auto; padding: 8px 0 0 0; border-top: 1px solid var(--border); }
 
-/* 相邻模块顶部留更大的空间 */
-.section + .section { border-top: 1px solid var(--border);}
+.section + .section { border-top: 1px solid var(--border);} 
 
 .section-title {
   font-size: 12px;
   opacity: 0.85;
-  margin-bottom: 8px; /* 原 6，稍增 */
+  margin-bottom: 8px;
 }
 
 .row { display: flex; gap: 8px; align-items: center; width: 100%; }
-.col { display: flex; flex-direction: column; gap: 10px; width: 100%; } /* 原 8 -> 10 */
+.col { display: flex; flex-direction: column; gap: 10px; width: 100%; }
 
 .form-row { display: flex; align-items: center; margin-bottom: 5px ; width: 100%; }
-.form-row .label { min-width: 60px; color: var(--text); font-size: 12px; opacity: .9; text-align: left; } /* 左对齐 */
+.form-row .label { min-width: 60px; color: var(--text); font-size: 12px; opacity: .9; text-align: left; }
 .form-row .control { flex: 1 1 auto; min-width: 0; }
 
-/* 控件满宽但不超过面板（典型 300px 内） */
 .picker-full, .textarea-full, .textfield-full { width: 100%; max-width: 260px; }
 .textarea-tall { min-height: 120px; }
 
-.actions { display: flex; margin-top: 5px; align-items: center; justify-content: space-between; gap: 10px; width: 100%; } /* 左对齐 */
+.actions { display: flex; margin-top: 5px; align-items: center; justify-content: space-between; gap: 10px; width: 100%; }
 .actions-left, .actions-right { display: flex; gap: 10px; align-items: center; }
 
-/* 左侧状态文本允许换行，并限制最大宽度，确保错误信息完整展示 */
 .status { 
   flex: 0 1 auto; 
   min-width: 0; 
@@ -85,20 +78,20 @@ html, body, #root {
 
 sp-picker {
    width: 150px;
-   margin-left: 0; /* 去除右偏移，保持与标签左对齐 */
+   margin-left: 0;
 }
 
 sp-action-button {
-  margin-right: 0; /* 由父容器 gap 负责间距 */
+  margin-right: 0;
+  display:flex;
+  align-items: center;
+  position: relative;
 }
 
-
-sp-radio-group {
-  margin-bottom: 5px;
-}
+sp-radio-group { margin-bottom: 5px; }
 
 .preset-preview {
-  margin: 6px 0 2px 0;
+  margin: 6px 0 5px 0;
   padding: 6px 8px;
   font-family: 'SourceHanSansCN-Normal', monospace;
   font-size: 12px;

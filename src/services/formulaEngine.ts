@@ -1,4 +1,4 @@
-/* 公式引擎：受限表达式编译与执行（支持向量变量 B/T；也兼容旧的 rb/gb/bb/ab、rs/gs/bs/as） */
+/* 公式引擎：受限表达式编译与执行（仅支持向量变量 B/S；不再兼容 T；同时支持标量 rb/gb/bb/ab、rs/gs/bs/as） */
 
 export type Engine = (v: { rb:number; gb:number; bb:number; ab:number; rs:number; gs:number; bs:number; as:number; }) => [number, number, number, number?];
 
@@ -26,28 +26,36 @@ const SAFE_FUNCS = {
 
 // 白名单：数字/小数、空白、运算符、括号、逗号、问号冒号、变量名、函数名、方括号
 const ALLOWED_TOKENS = new RegExp(
-  String.raw`^(?:[0-9]+(?:\.[0-9]+)?|\s+|[+\-*/%]|[()\[\],?:]|rb|gb|bb|ab|rs|gs|bs|as|B|T|abs|min|max|floor|ceil|round|sqrt|pow|exp|log|clamp|mix|step|smoothstep|lum|saturate)+$`
+  String.raw`^(?:[0-9]+(?:\.[0-9]+)?|\s+|[+\-*/%]|[()\[\],?:]|rb|gb|bb|ab|rs|gs|bs|as|B|S|abs|min|max|floor|ceil|round|sqrt|pow|exp|log|clamp|mix|step|smoothstep|lum|saturate)+$`
 );
+
+function ensureNoDeprecated(expr: string) {
+  if (/\bT\b/.test(expr)) {
+    throw new Error('不再支持变量 T，请改用 S（Source）');
+  }
+}
 
 function sanitize(expr: string): string {
   const s = expr.trim();
   if (!s) throw new Error('公式为空');
+  ensureNoDeprecated(s);
   if (!ALLOWED_TOKENS.test(s)) {
     throw new Error('检测到不被允许的符号或标识符');
   }
   return s;
 }
 
-// 将包含向量变量 B/T 的表达式扩展为四通道数组表达式
-function expandBTToChannels(expr: string): string {
+// 将包含向量变量 B/S 的表达式扩展为四通道数组表达式
+function expandBSToChannels(expr: string): string {
   const s = expr.trim();
   if (!s) throw new Error('公式为空');
-  // 如果未包含 B/T，则认为是旧语法，直接返回（由 sanitize 校验）
-  if (!/\b[BT]\b/.test(s)) return s;
+  ensureNoDeprecated(s);
+  // 如果未包含 B/S，则认为是旧语法，直接返回（由 sanitize 校验）
+  if (!/\b[BS]\b/.test(s)) return s;
 
   const replaceFor = (ch: 'r'|'g'|'b'|'a') =>
     s.replace(/\bB\b/g, ch === 'r' ? 'rb' : ch === 'g' ? 'gb' : ch === 'b' ? 'bb' : 'ab')
-     .replace(/\bT\b/g, ch === 'r' ? 'rs' : ch === 'g' ? 'gs' : ch === 'b' ? 'bs' : 'as');
+     .replace(/\bS\b/g, ch === 'r' ? 'rs' : ch === 'g' ? 'gs' : ch === 'b' ? 'bs' : 'as');
 
   const rExpr = replaceFor('r');
   const gExpr = replaceFor('g');
@@ -57,8 +65,8 @@ function expandBTToChannels(expr: string): string {
 }
 
 export function compile(expr: string): Engine {
-  // 先将 B/T 语法扩展为显式四通道数组（或保留旧语法）
-  const expanded = expandBTToChannels(expr);
+  // 先将 B/S 语法扩展为显式四通道数组（或保留旧语法）
+  const expanded = expandBSToChannels(expr);
   const code = sanitize(expanded);
   // 使用受控 Function，传入白名单参数，屏蔽 this、global
   // eslint-disable-next-line no-new-func

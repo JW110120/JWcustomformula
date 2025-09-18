@@ -15,20 +15,20 @@
       },
       "type": "panel",
       "minimumSize": {
-        "width": 300,
-        "height": 400
+        "width": 270,
+        "height": 380
       },
       "maximumSize": {
-        "width": 300,
-        "height": 400   
+        "width": 270,
+        "height": 380   
       },
       "preferredDockedSize": {
-        "width": 300,
-        "height": 400
+        "width": 270,
+        "height": 380
       },
       "preferredFloatingSize": {
-        "width": 300,
-        "height": 400
+        "width": 270,
+        "height": 380
       },
       "icons": [
         {
