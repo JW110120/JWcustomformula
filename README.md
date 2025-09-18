@@ -29,7 +29,7 @@
 - 那你输入向量中没有指定 alpha 通道的话，插件会默认用基底图层的 alpha 通道
 
 ## 安装方法
-由于核心算法使用Imageing API，所以对PS版本有要求。
+由于核心算法使用Imaging API，所以对PS版本有要求。
 要求：Photoshop 24.4 及以上
 
 - 直接拷贝dist文件
