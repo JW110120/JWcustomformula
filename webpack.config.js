@@ -57,9 +57,12 @@ module.exports = (env, argv) => {
         new copyWebpackPlugin({
             patterns: [
                 { from: "./manifest.json", to: "." },
+                { from: "./README.md", to: "." },
                 { from: "./src/assets/icons", to: "./icons" },
                 // 修改字体文件路径，确保它与实际文件位置匹配
                 { from: "./src/assets/fonts", to: "./fonts" },
+                // 复制 assets 根目录下的其他资源（如插件截图），排除已单独处理的 fonts 与 icons
+                { from: "./src/assets", to: "./assets", globOptions: { ignore: ["**/icons/**", "**/fonts/**"] } },
                 { from: "./src/styles", to: "." }
             ]
         }),
